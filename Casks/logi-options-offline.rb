@@ -12,7 +12,7 @@ cask "logi-options-offline" do
   end
   
   auto_updates true
-  depends_on macos: ">= :catalina"
+  depends_on macos: :catalina
 
   # Script is copied from the official Logi Options cask
   # See https://github.com/Homebrew/homebrew-cask/blob/4d3d9d83e738b2c90a7d515f0417f0666341f3aa/Casks/l/logi-options+.rb
