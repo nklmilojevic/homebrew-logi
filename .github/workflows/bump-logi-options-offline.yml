@@ -1,0 +1,93 @@
+name: Bump logi-options-offline
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-logi-options-offline
+  cancel-in-progress: false
+
+env:
+  URL: https://download01.logi.com/web/ftp/pub/techsupport/optionsplus/logioptionsplus_installer_offline.zip
+  CASK: Casks/logi-options-offline.rb
+  ETAG_FILE: .github/logi-options-offline.etag
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check remote ETag
+        id: head
+        run: |
+          set -euo pipefail
+          etag="$(curl -fsSI "$URL" | tr -d '\r' | awk 'tolower($1)=="etag:" {print $2}')"
+          if [ -z "$etag" ]; then
+            echo "No ETag header returned" >&2
+            exit 1
+          fi
+          known="$(cat "$ETAG_FILE" 2>/dev/null || true)"
+          echo "remote=$etag known=$known"
+          if [ "$etag" = "$known" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "etag=$etag" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and inspect installer
+        if: steps.head.outputs.changed == 'true'
+        id: inspect
+        run: |
+          set -euo pipefail
+          curl -fsSL -o installer.zip "$URL"
+          sha="$(sha256sum installer.zip | cut -d' ' -f1)"
+          unzip -q installer.zip 'logioptionsplus_installer_offline.app/Contents/Info.plist'
+          version="$(python3 - <<'EOF'
+          import plistlib
+          with open("logioptionsplus_installer_offline.app/Contents/Info.plist", "rb") as f:
+              print(plistlib.load(f)["CFBundleVersion"])
+          EOF
+          )"
+          echo "sha=$sha version=$version"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Update cask and ETag marker
+        if: steps.head.outputs.changed == 'true'
+        id: update
+        run: |
+          set -euo pipefail
+          sha="${{ steps.inspect.outputs.sha }}"
+          version="${{ steps.inspect.outputs.version }}"
+          old_version="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$CASK")"
+          sed -i "s/^  version \".*\"$/  version \"$version\"/" "$CASK"
+          sed -i "s/^  sha256 \".*\"$/  sha256 \"$sha\"/" "$CASK"
+          printf '%s\n' "${{ steps.head.outputs.etag }}" > "$ETAG_FILE"
+          if git diff --quiet -- "$CASK"; then
+            echo "cask_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cask_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "old_version=$old_version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.head.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$CASK" "$ETAG_FILE"
+          if [ "${{ steps.update.outputs.cask_changed }}" = "true" ]; then
+            git commit -m "logi-options-offline: bump to ${{ steps.inspect.outputs.version }}" \
+              -m "Previous version: ${{ steps.update.outputs.old_version }}"
+          else
+            git commit -m "logi-options-offline: record new ETag (content unchanged)"
+          fi
+          git push
